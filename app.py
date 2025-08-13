@@ -76,8 +76,12 @@ def run_script(workdir, timeout=150):
     except subprocess.TimeoutExpired as e:
         return -1, "", f"TimeoutExpired: {str(e)}"
 
-# ---------- API endpoint ----------
-@app.post("/")
+# ---------- API endpoints with /api prefix ----------
+from fastapi import APIRouter
+
+api_router = APIRouter(prefix="/api")
+
+@api_router.post("/")
 async def analyze(files: list[UploadFile] = File(...)):
     request_id = uuid.uuid4().hex[:8]
     workdir = tempfile.mkdtemp(prefix=f"task_{request_id}_")
@@ -141,6 +145,8 @@ async def analyze(files: list[UploadFile] = File(...)):
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-@app.get("/")
+@api_router.get("/")
 def root():
     return {"message": "TDS Data Analyst Agent is running"}
+
+app.include_router(api_router)
