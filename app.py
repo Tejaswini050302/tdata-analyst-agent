@@ -1,28 +1,20 @@
-import os
-import uuid
-import shutil
-import json
-import re
-import subprocess
-import tempfile
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, APIRouter
 from fastapi.responses import JSONResponse
-import requests
+import os, uuid, shutil, json, re, subprocess, tempfile, requests
 from dotenv import load_dotenv
 
-# Load environment variables from .env
+# Load .env
 load_dotenv()
-
-app = FastAPI(title="TDS Data Analyst Agent - Prototype")
-
-# Get env vars once here, after loading .env
 base = os.environ.get("AIPROXY_URL")
 token = os.environ.get("AIPROXY_TOKEN")
 
 print(f"AIPROXY_URL={base}")
 print(f"AIPROXY_TOKEN={'SET' if token else 'NOT SET'}")
 
-# ---------- Call LLM via AI proxy ----------
+app = FastAPI(title="TDS Data Analyst Agent - Prototype")
+api_router = APIRouter(prefix="/api")
+
+# ---------- LLM call ----------
 def call_llm_system(user_prompt, timeout=60):
     if not base:
         raise Exception("Set AIPROXY_URL env var")
@@ -30,18 +22,13 @@ def call_llm_system(user_prompt, timeout=60):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    else:
-        print("WARNING: No AIPROXY_TOKEN set!")
-
     system_message = (
         "You are an assistant that must output ONLY a single python script (no explanation). "
-        "The script will be saved as task_script.py and executed in an empty working directory that contains the uploaded files (questions.txt and any attachments). "
-        "CONSTRAINTS: Use only these libraries: requests, bs4, pandas, numpy, matplotlib, io, base64, json, os, sys, re. "
-        "The script MUST finish within ~2 minutes and MUST print the final answer to STDOUT as valid JSON (either an array or an object), and should not write files outside working dir. "
-        "If producing an image, include it in the JSON as a data URI like 'data:image/png;base64,...' under 100KB. "
-        "Do NOT call external LLMs from the script. Do not include any extraneous text — only python code."
+        "The script will be saved as task_script.py and executed in an empty working directory "
+        "that contains the uploaded files (questions.txt and any attachments). "
+        "Use only these libraries: requests, bs4, pandas, numpy, matplotlib, io, base64, json, os, sys, re. "
+        "The script MUST finish within ~2 minutes and print valid JSON to STDOUT."
     )
-
     body = {
         "model": "gpt-4o-mini",
         "messages": [
@@ -54,7 +41,7 @@ def call_llm_system(user_prompt, timeout=60):
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
-# ---------- Extract python code ----------
+# ---------- Extract Python ----------
 def extract_python_code(text):
     m = re.search(r"```python(.*?)```", text, flags=re.S | re.I)
     if not m:
@@ -76,69 +63,63 @@ def run_script(workdir, timeout=150):
     except subprocess.TimeoutExpired as e:
         return -1, "", f"TimeoutExpired: {str(e)}"
 
-# ---------- API endpoints with /api prefix ----------
-from fastapi import APIRouter
-
-api_router = APIRouter(prefix="/api")
-
+# ---------- API endpoint ----------
 @api_router.post("/")
 async def analyze(files: list[UploadFile] = File(...)):
     request_id = uuid.uuid4().hex[:8]
     workdir = tempfile.mkdtemp(prefix=f"task_{request_id}_")
     try:
-        uploaded_names = []
-        q_text = None
+        question_text = None
+        uploaded_files = []
 
-        # Save uploaded files
         for f in files:
-            dest = os.path.join(workdir, f.filename)
-            with open(dest, "wb") as fh:
+            dest_path = os.path.join(workdir, f.filename)
+            with open(dest_path, "wb") as fh:
                 fh.write(await f.read())
-            uploaded_names.append(f.filename)
+            uploaded_files.append(f.filename)
             if f.filename.lower() == "questions.txt":
-                with open(dest, "r", encoding="utf-8", errors="ignore") as r:
-                    q_text = r.read()
+                with open(dest_path, "r", encoding="utf-8", errors="ignore") as r:
+                    question_text = r.read()
 
-        if not q_text:
+        if not question_text:
             raise HTTPException(status_code=400, detail="questions.txt is required")
 
         # Build prompt
-        user_prompt = (
-            "Here is the contents of questions.txt:\n\n"
-            f"{q_text}\n\n"
-            "Files uploaded: " + ", ".join(uploaded_names) + "\n\n"
-            "Write a single python script (no explanation) that reads the files in the current directory and prints the final result as JSON."
+        prompt = (
+            "Here is the content of questions.txt:\n\n"
+            f"{question_text}\n\n"
+            "Uploaded files: " + ", ".join(uploaded_files) + "\n\n"
+            "Write a single Python script (no explanation) that reads the files in the current directory "
+            "and prints the final result as valid JSON to STDOUT."
         )
 
-        # Get script from LLM
-        code = extract_python_code(call_llm_system(user_prompt))
+        # Get initial code
+        code = extract_python_code(call_llm_system(prompt))
 
-        # Attempt-run loop
+        # Attempt-run-retry loop
         for attempt in range(1, 4):
             with open(os.path.join(workdir, "task_script.py"), "w", encoding="utf-8") as f:
                 f.write(code)
 
-            rc, sout, serr = run_script(workdir, timeout=120)
+            rc, stdout, stderr = run_script(workdir, timeout=120)
 
             try:
-                parsed = json.loads(sout.strip() or "null")
+                parsed = json.loads(stdout.strip() or "null")
                 return JSONResponse(content=parsed)
             except Exception:
-                pass
-
-            feedback = (
-                f"Attempt {attempt} failed.\nReturn code: {rc}\nSTDOUT:\n{sout}\nSTDERR:\n{serr}\n"
-                "Fix the code below and return only Python code:\n" + code
-            )
-            new_code = extract_python_code(call_llm_system(feedback))
-            if new_code.strip() == code.strip():
-                break
-            code = new_code
+                feedback = (
+                    f"Attempt {attempt} failed.\nReturn code: {rc}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}\n"
+                    "Fix the code below and return only Python code:\n" + code
+                )
+                new_code = extract_python_code(call_llm_system(feedback))
+                if new_code.strip() == code.strip():
+                    break
+                code = new_code
 
         return JSONResponse(status_code=500, content={
             "error": "Could not produce valid JSON after retries",
-            "last_stdout": sout,
-            "last_stderr": serr,
+            "last_stdout": stdout,
+            "last_stderr": stderr,
             "last_code": code[:4000]
         })
 
