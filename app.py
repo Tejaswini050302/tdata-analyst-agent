@@ -1,24 +1,37 @@
-import os, uuid, shutil, json, re, subprocess, tempfile
+import os
+import uuid
+import shutil
+import json
+import re
+import subprocess
+import tempfile
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 import requests
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 
 app = FastAPI(title="TDS Data Analyst Agent - Prototype")
+
+# Get env vars once here, after loading .env
+base = os.environ.get("AIPROXY_URL")
+token = os.environ.get("AIPROXY_TOKEN")
 
 print(f"AIPROXY_URL={base}")
 print(f"AIPROXY_TOKEN={'SET' if token else 'NOT SET'}")
 
-
 # ---------- Call LLM via AI proxy ----------
 def call_llm_system(user_prompt, timeout=60):
-    base = os.environ.get("AIPROXY_URL")
-    token = os.environ.get("AIPROXY_TOKEN")
     if not base:
         raise Exception("Set AIPROXY_URL env var")
     url = base.rstrip("/") + "/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    else:
+        print("WARNING: No AIPROXY_TOKEN set!")
 
     system_message = (
         "You are an assistant that must output ONLY a single python script (no explanation). "
