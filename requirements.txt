@@ -5,8 +5,6 @@ requests
 pandas
 numpy
 matplotlib
-seaborn
-scikit-learn
 beautifulsoup4
 Pillow
 python-dotenv
