@@ -5,6 +5,10 @@ import requests
 
 app = FastAPI(title="TDS Data Analyst Agent - Prototype")
 
+print(f"AIPROXY_URL={base}")
+print(f"AIPROXY_TOKEN={'SET' if token else 'NOT SET'}")
+
+
 # ---------- Call LLM via AI proxy ----------
 def call_llm_system(user_prompt, timeout=60):
     base = os.environ.get("AIPROXY_URL")
