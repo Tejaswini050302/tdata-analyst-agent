@@ -29,7 +29,7 @@ COPY .env* ./
 RUN chmod +x entrypoint.sh
 
 # Expose the port the app runs on
-EXPOSE 10000
+EXPOSE 20000
 
 # Command to run the application
 CMD ["./entrypoint.sh"]
